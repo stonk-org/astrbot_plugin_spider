@@ -43,8 +43,13 @@ def compare_example_data(cached_data: Any, latest_data: Any) -> bool:
     Returns:
         True if there are updates, False otherwise
     """
+    # If fetch failed, don't consider it an update
+    if latest_data is None:
+        return False
+
+    # If no cached data, consider it an update (but only if we have latest_data)
     if cached_data is None:
-        return True  # No cached data, consider it an update
+        return True
 
     # Compare update counts
     cached_count = cached_data.get("update_count", 0)

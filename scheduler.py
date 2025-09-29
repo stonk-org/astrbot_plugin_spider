@@ -58,6 +58,13 @@ class Scheduler:
 
             # Look for the 'site' attribute which should be a SiteConfig
             if hasattr(module, "site") and isinstance(module.site, SiteConfig):
+                # Check if dependencies are available
+                if hasattr(module, "check_dependencies"):
+                    if not module.check_dependencies():
+                        logger.warning(f"站点模块 {site_name} 的依赖检查失败，该站点可能无法正常工作")
+                    else:
+                        logger.info(f"站点模块 {site_name} 的依赖检查通过")
+
                 # Register with scheduler
                 self.site_configs[site_name] = module.site
 
@@ -83,13 +90,40 @@ class Scheduler:
             return False
 
     def _check_site_requirements(self, site_name: str):
-        """Check and warn about site-specific requirements"""
+        """Check and install site-specific requirements"""
         sites_dir = Path(__file__).parent / "sites"
         requirements_file = sites_dir / site_name / "requirements.txt"
 
         if requirements_file.exists():
-            logger.info(f"站点 {site_name} 有特定依赖要求，请查看 {requirements_file} 文件")
-            # In a more advanced implementation, we could parse and validate dependencies here
+            try:
+                import subprocess
+                import sys
+
+                # Read the requirements file
+                with open(requirements_file, 'r', encoding='utf-8') as f:
+                    requirements = [line.strip() for line in f.readlines() if line.strip() and not line.startswith('#')]
+
+                if requirements:
+                    logger.info(f"站点 {site_name} 需要安装 {len(requirements)} 个依赖包")
+
+                    # Install each requirement using pip
+                    for requirement in requirements:
+                        try:
+                            logger.info(f"正在安装依赖: {requirement}")
+                            subprocess.check_call([
+                                sys.executable, "-m", "pip", "install", requirement
+                            ])
+                            logger.info(f"依赖 {requirement} 安装成功")
+                        except subprocess.CalledProcessError as e:
+                            logger.error(f"安装依赖 {requirement} 失败: {e}")
+                            # Continue with other requirements even if one fails
+
+                    logger.info(f"站点 {site_name} 的依赖安装完成")
+                else:
+                    logger.info(f"站点 {site_name} 的 requirements.txt 文件为空")
+
+            except Exception as e:
+                logger.error(f"处理站点 {site_name} 的依赖时出错: {e}")
 
     def start_site_scheduling(self, site_name: str):
         """
@@ -172,6 +206,18 @@ class Scheduler:
         site_config = self.site_configs[site_name]
         try:
             logger.debug(f"开始检查站点 {site_name} 的更新")
+
+            # Check if the site module has a check_dependencies function and if it passes
+            # This is a safety check to prevent sites with missing dependencies from running
+            site_module_name = f".sites.{site_name}.main"
+            try:
+                site_module = importlib.import_module(site_module_name, package=__package__)
+                if hasattr(site_module, "check_dependencies"):
+                    if not site_module.check_dependencies():
+                        logger.warning(f"站点 {site_name} 的依赖检查失败，跳过本次更新检查")
+                        return
+            except Exception as dep_check_error:
+                logger.debug(f"无法检查站点 {site_name} 的依赖: {dep_check_error}")
 
             # Load cached data using cache module
             cached_data = load_cache(site_name)
