@@ -8,7 +8,7 @@ from astrbot.core.star.star_tools import StarTools
 
 def get_data_dir():
     """Get the data directory using StarTools.get_data_dir"""
-    return StarTools.get_data_dir("astrbot_plugin_stonk")
+    return StarTools.get_data_dir("astrbot_plugin_spider")
 
 
 class SubscriptionManager:

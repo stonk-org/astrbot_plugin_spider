@@ -8,7 +8,7 @@ from astrbot.core.star.star_tools import StarTools
 
 def get_cache_dir():
     """Get the cache directory using StarTools.get_data_dir"""
-    return StarTools.get_data_dir("astrbot_plugin_stonk") / "cache"
+    return StarTools.get_data_dir("astrbot_plugin_spider") / "cache"
 
 
 def get_cache_file(site_name: str) -> Path:

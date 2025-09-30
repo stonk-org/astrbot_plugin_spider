@@ -1,4 +1,4 @@
-# AstrBot Stonk Plugin
+# AstrBot Spider Plugin
 
 网站订阅插件，可以订阅不同网站的更新并推送给用户。
 
@@ -151,9 +151,9 @@ def check_dependencies() -> bool:
 ## 配置
 
 插件数据存储在 AstrBot 的 `data` 目录下：
-- 订阅信息：`data/astrbot_plugin_stonk/subscriptions.json`
-- 会话信息：`data/astrbot_plugin_stonk/sessions.json`
-- 网站缓存：`data/astrbot_plugin_stonk/cache/`
+- 订阅信息：`data/astrbot_plugin_spider/subscriptions.json`
+- 会话信息：`data/astrbot_plugin_spider/sessions.json`
+- 网站缓存：`data/astrbot_plugin_spider/cache/`
 
 ## 注意事项
 

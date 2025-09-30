@@ -8,8 +8,8 @@ from .manager import subscription_manager
 from .scheduler import scheduler_instance
 from .message_dedup import message_dedup
 
-@register("stonk", "zanderzhng", "网站订阅插件，可以订阅不同网站的更新并推送给用户", "1.0.0", "https://github.com/zanderzhng/astrbot-plugin-stonk")
-class StonkPlugin(Star):
+@register("spider", "zanderzhng", "网站订阅插件，可以订阅不同网站的更新并推送给用户", "1.0.0", "https://github.com/zanderzhng/astrbot-plugin-spider")
+class SpiderPlugin(Star):
     """Website subscription plugin for AstrBot"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):

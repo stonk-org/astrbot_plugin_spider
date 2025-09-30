@@ -1,5 +1,5 @@
-name: astrbot_plugin_stonk
+name: astrbot_plugin_spider
 desc: 网站订阅插件，可以订阅不同网站的更新并推送给用户
 version: v0.0.1
 author: zanderzhng
-repo: https://github.com/stonk-org/astrbot_plugin_stonk
+repo: https://github.com/stonk-org/astrbot_plugin_spider
