@@ -15,7 +15,7 @@ class MessageDeduplication:
     def __init__(self):
         """Initialize message deduplication system"""
         self.data_file = get_data_dir() / "sent_messages.json"
-        self.sent_messages: Dict[str, float] = {}  # {message_hash: timestamp}
+        self.sent_messages: Dict[str, Dict[str, float]] = {}  # {site: {message_hash: timestamp}}
         self.load_sent_messages()
 
     def load_sent_messages(self):
@@ -24,17 +24,24 @@ class MessageDeduplication:
             if self.data_file.exists():
                 with open(self.data_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # Filter out messages older than 7 days
                     current_time = time.time()
                     seven_days_ago = current_time - (7 * 24 * 60 * 60)  # 7 days in seconds
 
-                    self.sent_messages = {
-                        msg_hash: timestamp
-                        for msg_hash, timestamp in data.items()
-                        if timestamp > seven_days_ago
-                    }
+                    # New format: {site: {message_hash: timestamp}}
+                    self.sent_messages = {}
+                    total_messages = 0
+                    for site, site_data in data.items():
+                        if isinstance(site_data, dict):
+                            cleaned_site_data = {
+                                msg_hash: timestamp
+                                for msg_hash, timestamp in site_data.items()
+                                if timestamp > seven_days_ago
+                            }
+                            if cleaned_site_data:
+                                self.sent_messages[site] = cleaned_site_data
+                                total_messages += len(cleaned_site_data)
 
-                    logger.info(f"已加载 {len(self.sent_messages)} 条近期发送的消息记录")
+                    logger.info(f"已加载 {total_messages} 条近期发送的消息记录（按站点分组）")
                     self.save_sent_messages()  # Save cleaned data
             else:
                 self.sent_messages = {}
@@ -60,42 +67,52 @@ class MessageDeduplication:
         import hashlib
         return hashlib.md5(message.encode('utf-8')).hexdigest()
 
-    def is_duplicate(self, message: str) -> bool:
-        """Check if message is a duplicate sent within 7 days"""
+    def is_duplicate(self, message: str, site: str = "default") -> bool:
+        """Check if message is a duplicate sent within 7 days for the specified site"""
         message_hash = self._hash_message(message)
-        current_time = time.time()
-
-        # Check if message exists in our records
-        if message_hash in self.sent_messages:
-            # Check if it was sent within the last 7 days
-            seven_days_ago = current_time - (7 * 24 * 60 * 60)
-            if self.sent_messages[message_hash] > seven_days_ago:
-                return True
-
-        return False
-
-    def record_message(self, message: str):
-        """Record that a message has been sent"""
-        message_hash = self._hash_message(message)
-        self.sent_messages[message_hash] = time.time()
-        self.save_sent_messages()
-
-    def cleanup_old_records(self):
-        """Remove records older than 7 days"""
         current_time = time.time()
         seven_days_ago = current_time - (7 * 24 * 60 * 60)
 
-        old_count = len(self.sent_messages)
-        self.sent_messages = {
+        # Check if site exists in our records
+        if site in self.sent_messages:
+            # Clean up old records for this site on-the-fly
+            site_data = self.sent_messages[site]
+            # Remove old records and check for duplicate in one pass
+            still_valid = {}
+            is_dup = False
+
+            for msg_hash, timestamp in site_data.items():
+                if timestamp > seven_days_ago:
+                    still_valid[msg_hash] = timestamp
+                    if msg_hash == message_hash:
+                        is_dup = True
+
+            self.sent_messages[site] = still_valid
+            return is_dup
+
+        return False
+
+    def record_message(self, message: str, site: str = "default"):
+        """Record that a message has been sent for the specified site"""
+        message_hash = self._hash_message(message)
+        current_time = time.time()
+        seven_days_ago = current_time - (7 * 24 * 60 * 60)
+
+        # Ensure site exists in our records
+        if site not in self.sent_messages:
+            self.sent_messages[site] = {}
+
+        # Clean up old records for this site before adding new one
+        site_data = self.sent_messages[site]
+        still_valid = {
             msg_hash: timestamp
-            for msg_hash, timestamp in self.sent_messages.items()
+            for msg_hash, timestamp in site_data.items()
             if timestamp > seven_days_ago
         }
+        still_valid[message_hash] = current_time
+        self.sent_messages[site] = still_valid
 
-        new_count = len(self.sent_messages)
-        if old_count != new_count:
-            logger.info(f"清理了 {old_count - new_count} 条过期消息记录")
-            self.save_sent_messages()
+        self.save_sent_messages()
 
 
 # Global instance
