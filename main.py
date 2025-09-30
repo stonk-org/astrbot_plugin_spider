@@ -74,7 +74,7 @@ class StonkPlugin(Star):
 
         # 检查权限：仅限管理员/OP或私聊用户使用
         is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
-        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+        if is_group and not event.is_admin():
             yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
             event.stop_event()
             return
@@ -117,7 +117,7 @@ class StonkPlugin(Star):
 
         # 检查权限：仅限管理员/OP或私聊用户使用
         is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
-        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+        if is_group and not event.is_admin():
             yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
             event.stop_event()
             return
@@ -217,7 +217,7 @@ class StonkPlugin(Star):
         """
         # 检查权限：仅限管理员/OP或私聊用户使用
         is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
-        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+        if is_group and not event.is_admin():
             yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
             event.stop_event()
             return
@@ -252,7 +252,7 @@ class StonkPlugin(Star):
         """
         # 检查权限：仅限管理员/OP或私聊用户使用
         is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
-        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+        if is_group and not event.is_admin():
             yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
             event.stop_event()
             return

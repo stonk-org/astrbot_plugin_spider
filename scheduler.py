@@ -311,8 +311,11 @@ class Scheduler:
                 # Format notification using site's format function
                 notification = site_config.format(latest_data)
 
+                # Skip empty notifications
+                if not notification:
+                    logger.debug(f"站点 {site_name} 无新内容，跳过发送通知")
                 # Check if this is a duplicate message sent within 7 days
-                if message_dedup.is_duplicate(notification):
+                elif message_dedup.is_duplicate(notification):
                     logger.info(f"站点 {site_name} 的更新消息是重复的，7天内已发送过相同内容，跳过发送")
                 else:
                     # Record this message as sent
