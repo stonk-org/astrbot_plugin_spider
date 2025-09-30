@@ -1,22 +1,19 @@
 """
 Template for creating new site subscription modules.
 Copy this folder and modify the functions to create a new site module.
+
+Note: If your site module requires additional dependencies, add them to
+requirements.txt in your site module directory. Users must manually install
+these dependencies before using your site module.
+
+Metadata fields in SiteConfig:
+- version: Site module version (default: "1.0.0")
+- author: Site module author (default: "Anonymous")
+- dependencies: List of required dependencies (default: [])
 """
 
 from typing import Any
-import logging
-
-# Handle dependencies - update this section based on your site's requirements
-try:
-    # Import any additional dependencies your site needs
-    # Example:
-    # import requests
-    # import bs4
-    DEPENDENCIES_AVAILABLE = True
-except ImportError as e:
-    DEPENDENCIES_AVAILABLE = False
-    logging.warning(f"依赖导入失败: {e}")
-
+# Standard relative imports for plugin directory structure
 from ...cache import load_cache
 from .. import SiteConfig
 
@@ -80,8 +77,6 @@ def site_description() -> str:
         Site description
     """
     # TODO: Return a description of the site
-    if not DEPENDENCIES_AVAILABLE:
-        return "网站描述 - 需要安装额外依赖"
     return "网站描述"
 
 
@@ -109,12 +104,9 @@ def site_display_name() -> str:
     return "网站名称"
 
 
-def check_dependencies() -> bool:
-    """Check if all dependencies are available"""
-    return DEPENDENCIES_AVAILABLE
 
 
-# Register the site using the functional configuration
+# Register the site using the functional configuration with metadata
 site = SiteConfig(
     name="template",
     fetch_func=fetch_data,
@@ -123,4 +115,7 @@ site = SiteConfig(
     description_func=site_description,
     schedule_func=site_schedule,
     display_name_func=site_display_name,
+    version="1.0.0",  # Site module version
+    author="Your Name",  # Site module author
+    dependencies=[],  # List of required dependencies (e.g., ["httpx", "beautifulsoup4"])
 )

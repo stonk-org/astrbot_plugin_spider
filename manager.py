@@ -3,6 +3,12 @@ import os
 from pathlib import Path
 
 from astrbot.api import logger
+from astrbot.core.star.star_tools import StarTools
+
+
+def get_data_dir():
+    """Get the data directory using StarTools.get_data_dir"""
+    return StarTools.get_data_dir("astrbot_plugin_stonk")
 
 
 class SubscriptionManager:
@@ -11,13 +17,25 @@ class SubscriptionManager:
     def __init__(self):
         """Initialize subscription manager"""
         # Use AstrBot's data directory for storing subscription data
-        self.data_file = Path("data/astrbot_plugin_stonk/subscriptions.json")
-        self.session_file = Path("data/astrbot_plugin_stonk/sessions.json")
+        data_dir = get_data_dir()
+        self.data_file = data_dir / "subscriptions.json"
+        self.session_file = data_dir / "sessions.json"
         # New structure: {site_name: {"users": [user_ids], "groups": [group_ids]}}
         self.subscriptions: dict[str, dict[str, list[str]]] = {}
         # Store session context for notification sending: {subscriber_id: unified_msg_origin}
         # This now includes both users and groups
         self.subscriber_sessions: dict[str, str] = {}
+
+    def get_config_value(self, key, default=None):
+        """Get configuration value with default fallback"""
+        # Import here to avoid circular imports
+        try:
+            from .scheduler import scheduler_instance
+            if scheduler_instance.plugin_instance and hasattr(scheduler_instance.plugin_instance, 'get_config_value'):
+                return scheduler_instance.plugin_instance.get_config_value(key, default)
+        except Exception:
+            pass
+        return default
 
     def initialize(self):
         """Initialize subscription manager"""

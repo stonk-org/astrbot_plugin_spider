@@ -3,11 +3,17 @@
 import json
 from pathlib import Path
 from typing import Any
+from astrbot.core.star.star_tools import StarTools
+
+
+def get_cache_dir():
+    """Get the cache directory using StarTools.get_data_dir"""
+    return StarTools.get_data_dir("astrbot_plugin_stonk") / "cache"
 
 
 def get_cache_file(site_name: str) -> Path:
     """Get cache file path for a site"""
-    cache_dir = Path("data/astrbot_plugin_stonk/cache")
+    cache_dir = get_cache_dir()
     return cache_dir / f"{site_name}_subscription.json"
 
 

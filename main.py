@@ -1,17 +1,24 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api import logger, AstrBotConfig
+from astrbot.api.platform import MessageType
+from astrbot.core.star.star_tools import StarTools
 
 from .manager import subscription_manager
 from .scheduler import scheduler_instance
+from .message_dedup import message_dedup
 
 @register("stonk", "zanderzhng", "网站订阅插件，可以订阅不同网站的更新并推送给用户", "1.0.0", "https://github.com/zanderzhng/astrbot-plugin-stonk")
 class StonkPlugin(Star):
     """Website subscription plugin for AstrBot"""
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
+        self.config = config or {}
         logger.info("网站订阅插件正在初始化...")
+
+        # Initialize StarTools with context
+        StarTools.initialize(context)
 
         # Set context for scheduler
         scheduler_instance.context = context
@@ -32,8 +39,19 @@ class StonkPlugin(Star):
 
         logger.info("网站订阅插件初始化完成")
 
+    def get_config_value(self, key, default=None):
+        """Get configuration value with default fallback"""
+        return self.config.get(key, default)
+
     async def terminate(self):
-        """Plugin cleanup when unloaded"""
+        """插件关闭时的清理操作
+
+        执行必要的资源清理工作，包括：
+        1. 取消所有计划任务以防止内存泄漏
+        2. 记录插件关闭日志
+
+        这个方法会在插件被禁用、重载或 AstrBot 关闭时自动调用。
+        """
         logger.info("网站订阅插件正在关闭...")
         # Cancel all scheduler tasks
         scheduler_instance.cancel_all_tasks()
@@ -42,13 +60,26 @@ class StonkPlugin(Star):
     # Subscription command handlers
     @filter.command("订阅")
     async def handle_subscribe(self, event: AstrMessageEvent, site_name: str = ""):
-        """处理订阅命令"""
+        """处理订阅命令
+
+        订阅指定的网站更新通知。用户或群组将接收该网站的内容更新推送。
+
+        Args:
+            event: AstrBot 消息事件对象
+            site_name: 要订阅的网站名称
+        """
         if not site_name:
             yield event.plain_result("请指定要订阅的网站名称")
             return
 
+        # 检查权限：仅限管理员/OP或私聊用户使用
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+            yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
+            event.stop_event()
+            return
+
         # 获取用户/群组ID
-        is_group = event.message_obj.group_id != ""
         if is_group:
             target_id = event.get_group_id()
             target_type = "群组"
@@ -65,18 +96,33 @@ class StonkPlugin(Star):
 
         if success:
             yield event.plain_result(f"{target_type} {target_id} 已订阅 {site_name}")
+            event.stop_event()
         else:
             yield event.plain_result(f"{target_type} {target_id} 订阅 {site_name} 失败")
+            event.stop_event()
 
     @filter.command("取消订阅")
     async def handle_unsubscribe(self, event: AstrMessageEvent, site_name: str = ""):
-        """处理取消订阅命令"""
+        """处理取消订阅命令
+
+        取消订阅指定的网站更新通知。用户或群组将不再接收该网站的内容更新推送。
+
+        Args:
+            event: AstrBot 消息事件对象
+            site_name: 要取消订阅的网站名称
+        """
         if not site_name:
             yield event.plain_result("请指定要取消订阅的网站名称")
             return
 
+        # 检查权限：仅限管理员/OP或私聊用户使用
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+            yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
+            event.stop_event()
+            return
+
         # 获取用户/群组ID
-        is_group = event.message_obj.group_id != ""
         if is_group:
             target_id = event.get_group_id()
             target_type = "群组"
@@ -92,14 +138,22 @@ class StonkPlugin(Star):
 
         if success:
             yield event.plain_result(f"{target_type} {target_id} 已取消订阅 {site_name}")
+            event.stop_event()
         else:
             yield event.plain_result(f"{target_type} {target_id} 未订阅 {site_name} 或取消订阅失败")
+            event.stop_event()
 
     @filter.command("订阅列表")
     async def handle_list_subscriptions(self, event: AstrMessageEvent):
-        """处理列出订阅命令"""
+        """处理列出订阅命令
+
+        显示用户或群组当前的订阅列表，包括已订阅和未订阅的网站。
+
+        Args:
+            event: AstrBot 消息事件对象
+        """
         # 获取用户/群组ID
-        is_group = event.message_obj.group_id != ""
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
         if is_group:
             target_id = event.get_group_id()
         else:
@@ -150,12 +204,25 @@ class StonkPlugin(Star):
                         message += f"○ {site} - (描述不可用)\n"
 
         yield event.plain_result(message)
+        event.stop_event()
 
     @filter.command("订阅全部")
     async def handle_subscribe_all(self, event: AstrMessageEvent):
-        """处理订阅全部命令"""
+        """处理订阅全部命令
+
+        订阅所有可用网站的更新通知。用户或群组将接收所有网站的内容更新推送。
+
+        Args:
+            event: AstrBot 消息事件对象
+        """
+        # 检查权限：仅限管理员/OP或私聊用户使用
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+            yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
+            event.stop_event()
+            return
+
         # 获取用户/群组ID
-        is_group = event.message_obj.group_id != ""
         if is_group:
             target_id = event.get_group_id()
             target_type = "群组"
@@ -169,14 +236,28 @@ class StonkPlugin(Star):
 
         if success:
             yield event.plain_result(f"{target_type} {target_id} 已订阅全部站点")
+            event.stop_event()
         else:
             yield event.plain_result(f"{target_type} {target_id} 订阅全部站点失败")
+            event.stop_event()
 
     @filter.command("取消订阅全部")
     async def handle_unsubscribe_all(self, event: AstrMessageEvent):
-        """处理取消订阅全部命令"""
+        """处理取消订阅全部命令
+
+        取消订阅所有网站的更新通知。用户或群组将不再接收任何网站的内容更新推送。
+
+        Args:
+            event: AstrBot 消息事件对象
+        """
+        # 检查权限：仅限管理员/OP或私聊用户使用
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        if is_group and not event.check_permission(filter.PermissionType.ADMIN):
+            yield event.plain_result("❌ 权限不足：仅管理员或OP可执行此操作")
+            event.stop_event()
+            return
+
         # 获取用户/群组ID
-        is_group = event.message_obj.group_id != ""
         if is_group:
             target_id = event.get_group_id()
             target_type = "群组"
@@ -189,5 +270,7 @@ class StonkPlugin(Star):
 
         if success:
             yield event.plain_result(f"{target_type} {target_id} 已取消订阅全部站点")
+            event.stop_event()
         else:
             yield event.plain_result(f"{target_type} {target_id} 未订阅全部站点或取消订阅失败")
+            event.stop_event()

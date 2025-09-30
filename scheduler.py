@@ -5,10 +5,17 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.message_components import Plain
+from astrbot.core.star.star_tools import StarTools
+
+# APScheduler imports
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from .cache import load_cache, save_cache
-from .manager import subscription_manager
+from .manager import subscription_manager, get_data_dir
 from .sites import SiteConfig
+from .message_dedup import message_dedup
 
 
 class Scheduler:
@@ -18,22 +25,73 @@ class Scheduler:
         """
         self.site_configs: dict[str, SiteConfig] = {}  # {site_name: site_config}
         self.display_name_to_site_name: dict[str, str] = {}  # {display_name: site_name}
-        self.tasks = {}  # {site_name: task}
         self.context = None  # Will be set by the plugin
+        self.plugin_instance = None  # Will be set by the plugin
+
+        # Initialize APScheduler
+        self.scheduler = AsyncIOScheduler()
+        self.scheduler_jobs = {}  # {site_name: job_id}
+
+        # Start the scheduler
+        self.scheduler.start()
+
+    def get_config_value(self, key, default=None):
+        """Get configuration value with default fallback"""
+        if self.plugin_instance and hasattr(self.plugin_instance, 'get_config_value'):
+            return self.plugin_instance.get_config_value(key, default)
+        return default
 
     def load_site_modules(self):
-        """Load all site subscription modules using functional approach"""
+        """Load all site subscription modules from both plugin and custom directories"""
         sites_dir = Path(__file__).parent / "sites"
-        loaded_sites = []
+        custom_sites_dir = get_data_dir() / "sites"
 
-        # Load all site directories (standardized structure)
+        loaded_sites = []
+        loaded_site_names = set()  # Track loaded site names to avoid duplicates
+
+        # Load site directories from plugin directory (standardized structure)
+        logger.info(f"正在从插件目录加载站点模块: {sites_dir}")
         for dir_path in sites_dir.iterdir():
             if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"]:
                 site_name = dir_path.name
-                if not self._load_site_module(site_name, is_directory=True):
+                # Skip if site with same name already loaded
+                if site_name in loaded_site_names:
+                    logger.warning(f"跳过重复站点模块: {site_name} (自定义版本已加载)")
+                    continue
+
+                if not self._load_site_module(site_name, is_directory=True, base_path=sites_dir):
                     continue
 
                 loaded_sites.append(site_name)
+                loaded_site_names.add(site_name)
+
+        # Load site directories from custom directory (user-defined structure)
+        if custom_sites_dir.exists():
+            logger.info(f"正在从自定义目录加载站点模块: {custom_sites_dir}")
+            for dir_path in custom_sites_dir.iterdir():
+                if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"]:
+                    site_name = dir_path.name
+                    # Warn if site with same name already loaded
+                    if site_name in loaded_site_names:
+                        logger.warning(f"覆盖插件站点模块: {site_name} (使用自定义版本)")
+                        # Remove the previously loaded site
+                        if site_name in self.site_configs:
+                            del self.site_configs[site_name]
+
+                    if not self._load_site_module(site_name, is_directory=True, base_path=custom_sites_dir):
+                        continue
+
+                    # Update loaded sites list - replace if exists, otherwise append
+                    if site_name not in loaded_sites:
+                        loaded_sites.append(site_name)
+                    loaded_site_names.add(site_name)
+        else:
+            logger.info(f"自定义站点目录不存在，将创建: {custom_sites_dir}")
+            try:
+                custom_sites_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"已创建自定义站点目录: {custom_sites_dir}")
+            except Exception as e:
+                logger.warning(f"创建自定义站点目录失败: {e}")
 
         # Add "全部" to display name mapping
         self.display_name_to_site_name["全部"] = "all"
@@ -41,44 +99,94 @@ class Scheduler:
         logger.info(f"已加载 {len(loaded_sites)} 个站点模块: {', '.join(loaded_sites) if loaded_sites else '无'}")
         return loaded_sites
 
-    def _load_site_module(self, site_name: str, is_directory: bool = False) -> bool:
-        """Load a single site module"""
+    def _load_site_module(self, site_name: str, is_directory: bool = False, base_path: Path = None) -> bool:
+        """Load a single site module from specified base path"""
+        import importlib.util
+        import sys
+
         try:
+            if base_path is None:
+                # Default to plugin sites directory
+                base_path = Path(__file__).parent / "sites"
+
+            # Determine if we're loading from plugin directory or custom directory
+            is_plugin_dir = base_path == Path(__file__).parent / "sites"
+
             if is_directory:
-                # Check for site-specific requirements
-                self._check_site_requirements(site_name)
+                if is_plugin_dir:
+                    # Import from plugin directory using relative import
+                    module = importlib.import_module(f".sites.{site_name}.main", package=__package__)
+                else:
+                    # Import from custom directory using spec loading with plugin path
+                    # Add plugin parent directory to sys.path so custom sites can import plugin modules
+                    plugin_parent_dir = str(Path(__file__).parent.parent)
+                    plugin_dir_name = Path(__file__).parent.name
+                    added_to_path = False
+                    if plugin_parent_dir not in sys.path:
+                        sys.path.insert(0, plugin_parent_dir)
+                        added_to_path = True
 
-                # Import from directory
-                module = importlib.import_module(f".sites.{site_name}.main", package=__package__)
+                    try:
+                        custom_site_path = base_path / site_name
+
+                        # Try to import main module directly
+                        main_py = custom_site_path / "main.py"
+                        if not main_py.exists():
+                            logger.error(f"自定义站点模块 {site_name} 缺少 main.py 文件")
+                            return False
+
+                        spec = importlib.util.spec_from_file_location(f"custom_sites.{site_name}.main", main_py)
+                        module = importlib.util.module_from_spec(spec)
+                        # Add to sys.modules before executing to support relative imports
+                        sys.modules[spec.name] = module
+                        logger.debug(f"执行站点模块 {site_name} 的代码")
+                        spec.loader.exec_module(module)
+                        logger.debug(f"站点模块 {site_name} 执行完成")
+                    finally:
+                        # Remove plugin parent directory from sys.path if we added it
+                        if added_to_path and plugin_parent_dir in sys.path:
+                            sys.path.remove(plugin_parent_dir)
             else:
-                # Import the site module using relative import
-                module = importlib.import_module(f".sites.{site_name}", package=__package__)
+                if is_plugin_dir:
+                    # Import the site module using relative import
+                    module = importlib.import_module(f".sites.{site_name}", package=__package__)
+                else:
+                    logger.error(f"不支持从自定义目录加载非目录形式的站点模块: {site_name}")
+                    return False
 
-            logger.debug(f"成功导入站点模块: {site_name}")
+            logger.debug(f"成功导入站点模块: {site_name} (来自: {base_path})")
 
             # Look for the 'site' attribute which should be a SiteConfig
-            if hasattr(module, "site") and isinstance(module.site, SiteConfig):
-                # Check if dependencies are available
-                if hasattr(module, "check_dependencies"):
-                    if not module.check_dependencies():
-                        logger.warning(f"站点模块 {site_name} 的依赖检查失败，该站点可能无法正常工作")
-                    else:
-                        logger.info(f"站点模块 {site_name} 的依赖检查通过")
+            if hasattr(module, "site"):
+                site_obj = module.site
+                # Check if it's a SiteConfig-like object by checking for required attributes
+                required_attrs = ['name', 'fetch', 'compare', 'format', 'description', 'schedule', 'display_name']
+                is_site_config = all(hasattr(site_obj, attr) for attr in required_attrs)
 
-                # Register with scheduler
-                self.site_configs[site_name] = module.site
+                if is_site_config:
+                    # Register with scheduler
+                    self.site_configs[site_name] = site_obj
 
-                # Map display name to site name
-                display_name = module.site.display_name()
-                self.display_name_to_site_name[display_name] = site_name
+                    # Map display name to site name
+                    display_name = site_obj.display_name()
+                    self.display_name_to_site_name[display_name] = site_name
 
-                # Start scheduling for this site
-                self.start_site_scheduling(site_name)
+                    # Start scheduling for this site
+                    self.start_site_scheduling(site_name)
 
-                logger.info(f"成功加载站点模块: {site_name} (显示名称: {display_name})")
-                return True
+                    source_type = "插件" if is_plugin_dir else "自定义"
+                    logger.info(f"成功加载{source_type}站点模块: {site_name} (显示名称: {display_name})")
+                    return True
+                else:
+                    logger.warning(f"站点模块 {site_name} 中的 site 变量不是有效的 SiteConfig 类型: {type(site_obj)}")
+                    # Log missing attributes for debugging
+                    missing_attrs = [attr for attr in required_attrs if not hasattr(site_obj, attr)]
+                    logger.debug(f"站点模块 {site_name} 中 site 对象缺少属性: {missing_attrs}")
+                    return False
             else:
-                logger.warning(f"站点模块 {site_name} 中未找到有效的 SiteConfig")
+                logger.warning(f"站点模块 {site_name} 中未找到 site 变量")
+                # Log module attributes for debugging
+                logger.debug(f"站点模块 {site_name} 的属性: {dir(module)}")
                 return False
 
         except ImportError as e:
@@ -89,45 +197,10 @@ class Scheduler:
             logger.error(f"加载站点模块 {site_name} 失败: {e}")
             return False
 
-    def _check_site_requirements(self, site_name: str):
-        """Check and install site-specific requirements"""
-        sites_dir = Path(__file__).parent / "sites"
-        requirements_file = sites_dir / site_name / "requirements.txt"
-
-        if requirements_file.exists():
-            try:
-                import subprocess
-                import sys
-
-                # Read the requirements file
-                with open(requirements_file, 'r', encoding='utf-8') as f:
-                    requirements = [line.strip() for line in f.readlines() if line.strip() and not line.startswith('#')]
-
-                if requirements:
-                    logger.info(f"站点 {site_name} 需要安装 {len(requirements)} 个依赖包")
-
-                    # Install each requirement using pip
-                    for requirement in requirements:
-                        try:
-                            logger.info(f"正在安装依赖: {requirement}")
-                            subprocess.check_call([
-                                sys.executable, "-m", "pip", "install", requirement
-                            ])
-                            logger.info(f"依赖 {requirement} 安装成功")
-                        except subprocess.CalledProcessError as e:
-                            logger.error(f"安装依赖 {requirement} 失败: {e}")
-                            # Continue with other requirements even if one fails
-
-                    logger.info(f"站点 {site_name} 的依赖安装完成")
-                else:
-                    logger.info(f"站点 {site_name} 的 requirements.txt 文件为空")
-
-            except Exception as e:
-                logger.error(f"处理站点 {site_name} 的依赖时出错: {e}")
 
     def start_site_scheduling(self, site_name: str):
         """
-        Start scheduling for a specific site
+        Start scheduling for a specific site using APScheduler
         Args:
             site_name: Name of the site to schedule
         """
@@ -140,56 +213,74 @@ class Scheduler:
             # Get schedule from site
             schedule = site_config.schedule()
 
+            # Remove any existing job for this site
+            if site_name in self.scheduler_jobs:
+                job_id = self.scheduler_jobs[site_name]
+                self.scheduler.remove_job(job_id)
+                logger.debug(f"已移除站点 {site_name} 的旧任务")
+
             # Check if schedule is a special debug interval (starts with "interval:")
             if schedule.startswith("interval:"):
                 # Parse interval (e.g., "interval:10" for 10 seconds)
-                interval_seconds = int(schedule.split(":")[1])
+                try:
+                    interval_seconds = int(schedule.split(":")[1])
 
-                # Create and start asyncio task for interval checking
-                async def site_check_task():
-                    while True:
-                        try:
-                            await self.check_site_updates(site_name)
-                        except Exception as e:
-                            logger.error(f"检查站点 {site_name} 更新时出错: {e}")
-                        await asyncio.sleep(interval_seconds)
+                    # Create interval trigger
+                    trigger = IntervalTrigger(seconds=interval_seconds)
 
-                # Start the task
-                task = asyncio.create_task(site_check_task())
-                self.tasks[site_name] = task
+                    # Add job to scheduler
+                    job = self.scheduler.add_job(
+                        self.check_site_updates,
+                        trigger,
+                        args=[site_name],
+                        id=f"site_{site_name}_interval",
+                        name=f"站点 {site_name} 间隔任务 ({interval_seconds} 秒)"
+                    )
 
-                logger.info(f"已为站点 {site_name} 启动调试任务: 每 {interval_seconds} 秒")
+                    # Store job ID
+                    self.scheduler_jobs[site_name] = job.id
+
+                    logger.info(f"已为站点 {site_name} 启动间隔任务: 每 {interval_seconds} 秒")
+                except (ValueError, IndexError) as e:
+                    logger.error(f"站点 {site_name} 的间隔格式错误: {schedule}")
+                    return
             else:
-                # Parse cron expression (for now, we'll just use a simplified version)
+                # Parse cron expression
                 cron_parts = schedule.split()
                 if len(cron_parts) != 5:
                     logger.error(f"站点 {site_name} 的调度表达式格式错误: {schedule}")
                     return
 
-                # For simplicity, we'll convert cron to interval (in minutes)
-                # In a production version, you'd want to use a proper cron parser
-                minute, hour, day, month, day_of_week = cron_parts
-
-                # Simple conversion for demonstration - use minute field as interval in minutes
                 try:
-                    interval_minutes = int(minute) if minute.isdigit() else 60  # default to hourly
-                except:
-                    interval_minutes = 60  # default to hourly
+                    # Parse cron parts: minute, hour, day, month, day_of_week
+                    minute, hour, day, month, day_of_week = cron_parts
 
-                # Create and start asyncio task for interval checking
-                async def site_check_task():
-                    while True:
-                        try:
-                            await self.check_site_updates(site_name)
-                        except Exception as e:
-                            logger.error(f"检查站点 {site_name} 更新时出错: {e}")
-                        await asyncio.sleep(interval_minutes * 60)  # Convert to seconds
+                    # Create cron trigger (APScheduler handles * and other cron syntax properly)
+                    trigger = CronTrigger(
+                        minute=minute,
+                        hour=hour,
+                        day=day,
+                        month=month,
+                        day_of_week=day_of_week
+                    )
 
-                # Start the task
-                task = asyncio.create_task(site_check_task())
-                self.tasks[site_name] = task
+                    # Add job to scheduler
+                    job = self.scheduler.add_job(
+                        self.check_site_updates,
+                        trigger,
+                        args=[site_name],
+                        id=f"site_{site_name}_cron",
+                        name=f"站点 {site_name} 定时任务 ({schedule})"
+                    )
 
-                logger.info(f"已为站点 {site_name} 启动定时任务: 每 {interval_minutes} 分钟")
+                    # Store job ID
+                    self.scheduler_jobs[site_name] = job.id
+
+                    logger.info(f"已为站点 {site_name} 启动定时任务: {schedule}")
+                except Exception as e:
+                    logger.error(f"为站点 {site_name} 创建定时任务失败: {e}")
+                    return
+
         except Exception as e:
             logger.error(f"为站点 {site_name} 启动定时任务失败: {e}")
 
@@ -207,18 +298,6 @@ class Scheduler:
         try:
             logger.debug(f"开始检查站点 {site_name} 的更新")
 
-            # Check if the site module has a check_dependencies function and if it passes
-            # This is a safety check to prevent sites with missing dependencies from running
-            site_module_name = f".sites.{site_name}.main"
-            try:
-                site_module = importlib.import_module(site_module_name, package=__package__)
-                if hasattr(site_module, "check_dependencies"):
-                    if not site_module.check_dependencies():
-                        logger.warning(f"站点 {site_name} 的依赖检查失败，跳过本次更新检查")
-                        return
-            except Exception as dep_check_error:
-                logger.debug(f"无法检查站点 {site_name} 的依赖: {dep_check_error}")
-
             # Load cached data using cache module
             cached_data = load_cache(site_name)
 
@@ -232,14 +311,21 @@ class Scheduler:
                 # Format notification using site's format function
                 notification = site_config.format(latest_data)
 
-                # Get subscribers
-                subscribers = subscription_manager.get_subscribers(site_name)
-
-                # Send notifications to all subscribers
-                if subscribers:
-                    await self._send_notifications(subscribers, notification)
+                # Check if this is a duplicate message sent within 7 days
+                if message_dedup.is_duplicate(notification):
+                    logger.info(f"站点 {site_name} 的更新消息是重复的，7天内已发送过相同内容，跳过发送")
                 else:
-                    logger.debug(f"站点 {site_name} 没有订阅者")
+                    # Record this message as sent
+                    message_dedup.record_message(notification)
+
+                    # Get subscribers
+                    subscribers = subscription_manager.get_subscribers(site_name)
+
+                    # Send notifications to all subscribers
+                    if subscribers:
+                        await self._send_notifications(subscribers, notification)
+                    else:
+                        logger.debug(f"站点 {site_name} 没有订阅者")
 
                 # Save new data to cache using cache module
                 save_cache(site_name, latest_data)
@@ -261,35 +347,40 @@ class Scheduler:
                 logger.error("Context not available for sending notifications")
                 return
 
-            # Import message components
-            from astrbot.api.message_components import Plain
-            from astrbot.api.event import MessageChain
+            # Get batch size from configuration
+            batch_size = self.get_config_value('notification_batch_size', 50)
 
-            for subscriber_id in subscribers:
-                try:
-                    # Check if we have stored session context for this subscriber
-                    if subscriber_id in subscription_manager.subscriber_sessions:
-                        # Send to stored session context
-                        unified_msg_origin = subscription_manager.subscriber_sessions[subscriber_id]
-                        # Validate session context before sending
-                        if unified_msg_origin:
-                            message_chain = MessageChain().message(message)
-                            await self.context.send_message(unified_msg_origin, message_chain)
-                            logger.info(f"已向订阅者 {subscriber_id} 发送通知")
+            # Process subscribers in batches to avoid overload
+            for i in range(0, len(subscribers), batch_size):
+                batch = subscribers[i:i + batch_size]
+
+                # Import message components
+                from astrbot.api.message_components import Plain
+                from astrbot.api.event import MessageChain
+
+                for subscriber_id in batch:
+                    try:
+                        # Check if we have stored session context for this subscriber
+                        if subscriber_id in subscription_manager.subscriber_sessions:
+                            # Send to stored session context
+                            unified_msg_origin = subscription_manager.subscriber_sessions[subscriber_id]
+                            # Validate session context before sending
+                            if unified_msg_origin:
+                                message_chain = MessageChain().message(message)
+                                await StarTools.send_message(unified_msg_origin, message_chain)
+                                logger.info(f"已向订阅者 {subscriber_id} 发送通知")
                         else:
-                            logger.warning(f"订阅者 {subscriber_id} 的会话上下文无效")
-                    else:
-                        # For subscribers without stored context,
-                        # we cannot send messages as we don't have the required session information
-                        # This happens when:
-                        # 1. User or group has not subscribed yet
-                        # 2. Session data was corrupted or missing
-                        logger.info(f"订阅者 {subscriber_id} 没有会话上下文，将无法接收通知。请订阅以接收更新。")
+                            # For subscribers without stored context,
+                            # we cannot send messages as we don't have the required session information
+                            # This happens when:
+                            # 1. User or group has not subscribed yet
+                            # 2. Session data was corrupted or missing
+                            logger.info(f"订阅者 {subscriber_id} 没有会话上下文，将无法接收通知。请订阅以接收更新。")
 
-                except Exception as e:
-                    logger.error(f"向订阅者 {subscriber_id} 发送通知失败: {e}")
-                    # Continue with other subscribers even if one fails
-                    continue
+                    except Exception as e:
+                        logger.error(f"向订阅者 {subscriber_id} 发送通知失败: {e}")
+                        # Continue with other subscribers even if one fails
+                        continue
         except Exception as e:
             logger.error(f"发送通知时出错: {e}")
 
@@ -299,15 +390,27 @@ class Scheduler:
 
     def cancel_all_tasks(self):
         """
-        Cancel all running scheduler tasks
+        Cancel all running scheduler tasks and shutdown APScheduler
         """
         try:
-            for site_name, task in self.tasks.items():
-                if not task.done():
-                    task.cancel()
-                    logger.info(f"已取消站点 {site_name} 的定时任务")
-            self.tasks.clear()
-            logger.info("所有定时任务已取消")
+            # Remove all scheduled jobs
+            job_count = len(self.scheduler_jobs)
+            if job_count > 0:
+                for site_name, job_id in self.scheduler_jobs.items():
+                    try:
+                        self.scheduler.remove_job(job_id)
+                        logger.info(f"已移除站点 {site_name} 的调度任务")
+                    except Exception as e:
+                        logger.warning(f"移除站点 {site_name} 的调度任务失败: {e}")
+
+                self.scheduler_jobs.clear()
+                logger.info(f"已移除 {job_count} 个调度任务")
+
+            # Shutdown the scheduler
+            if self.scheduler.running:
+                self.scheduler.shutdown()
+                logger.info("调度器已关闭")
+
         except Exception as e:
             logger.error(f"取消定时任务时出错: {e}")
 
