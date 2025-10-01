@@ -20,9 +20,6 @@ class SiteConfig:
         description_func: DescriptionFunc,
         schedule_func: ScheduleFunc,
         display_name_func: DisplayNameFunc = None,
-        version: str = "1.0.0",
-        dependencies: List[str] = None,
-        author: str = "Anonymous",
     ):
         # Validate required parameters
         if not name:
@@ -39,6 +36,3 @@ class SiteConfig:
         self.schedule = schedule_func
         self.display_name = display_name_func or description_func
         self.name = name
-        self.version = version
-        self.dependencies = dependencies or []
-        self.author = author
