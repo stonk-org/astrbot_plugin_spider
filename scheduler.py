@@ -292,6 +292,12 @@ class Scheduler:
             logger.error(f"站点 {site_name} 未注册")
             return
 
+        # Check if anyone is subscribed to this site before running it
+        subscribers = subscription_manager.get_subscribers(site_name)
+        if not subscribers:
+            logger.debug(f"站点 {site_name} 没有订阅者，跳过检查更新")
+            return
+
         site_config = self.site_configs[site_name]
         try:
             logger.debug(f"开始检查站点 {site_name} 的更新")
@@ -321,14 +327,8 @@ class Scheduler:
                 if not message:
                     continue
 
-                # Get subscribers
-                subscribers = subscription_manager.get_subscribers(site_name)
-
-                # Send notifications to all subscribers
-                if subscribers:
-                    await self._send_notifications(subscribers, message)
-                else:
-                    logger.debug(f"站点 {site_name} 没有订阅者")
+                # Send notifications to all subscribers (we already checked they exist)
+                await self._send_notifications(subscribers, message)
 
         except Exception as e:
             logger.error(f"检查站点 {site_name} 更新时出错: {e}")
