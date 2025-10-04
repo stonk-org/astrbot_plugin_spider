@@ -177,7 +177,4 @@ site = SiteConfig(
     description_func=site_description,
     schedule_func=site_schedule,
     display_name_func=site_display_name,
-    version="1.0.0",  # Site module version
-    author="Your Name",  # Site module author
-    dependencies=[],  # List of required dependencies (e.g., ["httpx", "beautifulsoup4"])
 )
