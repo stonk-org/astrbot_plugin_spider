@@ -12,10 +12,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from .cache import load_cache, save_cache
 from .manager import subscription_manager, get_data_dir
 from .sites import SiteConfig
-from .message_dedup import message_dedup
 
 
 class Scheduler:
@@ -52,7 +50,7 @@ class Scheduler:
         # Load site directories from plugin directory (standardized structure)
         logger.info(f"正在从插件目录加载站点模块: {sites_dir}")
         for dir_path in sites_dir.iterdir():
-            if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"]:
+            if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"] and not dir_path.name.startswith('.'):
                 site_name = dir_path.name
                 # Skip if site with same name already loaded
                 if site_name in loaded_site_names:
@@ -69,7 +67,7 @@ class Scheduler:
         if custom_sites_dir.exists():
             logger.info(f"正在从自定义目录加载站点模块: {custom_sites_dir}")
             for dir_path in custom_sites_dir.iterdir():
-                if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"]:
+                if dir_path.is_dir() and dir_path.name not in ["__pycache__", "template"] and not dir_path.name.startswith('.'):
                     site_name = dir_path.name
                     # Warn if site with same name already loaded
                     if site_name in loaded_site_names:
@@ -93,8 +91,6 @@ class Scheduler:
             except Exception as e:
                 logger.warning(f"创建自定义站点目录失败: {e}")
 
-        # Add "全部" to display name mapping
-        self.display_name_to_site_name["全部"] = "all"
 
         logger.info(f"已加载 {len(loaded_sites)} 个站点模块: {', '.join(loaded_sites) if loaded_sites else '无'}")
         return loaded_sites
@@ -160,7 +156,8 @@ class Scheduler:
             if hasattr(module, "site"):
                 site_obj = module.site
                 # Check if it's a SiteConfig-like object by checking for required attributes
-                required_attrs = ['name', 'fetch', 'compare', 'format', 'description', 'schedule', 'display_name']
+                # New SiteConfig has: name, check_updates, description, schedule, display_name
+                required_attrs = ['name', 'check_updates', 'description', 'schedule', 'display_name']
                 is_site_config = all(hasattr(site_obj, attr) for attr in required_attrs)
 
                 if is_site_config:
@@ -286,7 +283,8 @@ class Scheduler:
 
     async def check_site_updates(self, site_name: str):
         """
-        Check for updates from a specific site using functional approach
+        Check for updates from a specific site using the new check_updates approach
+        that handles caching and returns multiple messages.
         Args:
             site_name: Name of the site to check
         """
@@ -298,42 +296,39 @@ class Scheduler:
         try:
             logger.debug(f"开始检查站点 {site_name} 的更新")
 
-            # Load cached data using cache module
-            cached_data = load_cache(site_name)
+            # New interface: site handles everything including caching
+            result = await site_config.check_updates()
 
-            # Fetch latest data using site's fetch function
-            latest_data = await site_config.fetch()
+            # Handle the result
+            if not result or not isinstance(result, dict):
+                logger.error(f"站点 {site_name} 返回无效的结果格式")
+                return
 
-            # Check for updates using site's compare function
-            if site_config.compare(cached_data, latest_data):
-                logger.info(f"站点 {site_name} 检测到更新")
+            success = result.get('success', False)
+            error = result.get('error', '')
+            messages = result.get('messages', [])
 
-                # Format notification using site's format function
-                notification = site_config.format(latest_data)
+            if not success:
+                logger.error(f"站点 {site_name} 检查更新失败: {error}")
+                return
 
-                # Skip empty notifications
-                if not notification:
-                    logger.debug(f"站点 {site_name} 无新内容，跳过发送通知")
-                # Check if this is a duplicate message sent within 7 days for this site
-                elif message_dedup.is_duplicate(notification, site_name):
-                    logger.info(f"站点 {site_name} 的更新消息是重复的，7天内已发送过相同内容，跳过发送")
+            if not messages:
+                logger.debug(f"站点 {site_name} 无新内容，跳过发送通知")
+                return
+
+            # Process each message
+            for message in messages:
+                if not message:
+                    continue
+
+                # Get subscribers
+                subscribers = subscription_manager.get_subscribers(site_name)
+
+                # Send notifications to all subscribers
+                if subscribers:
+                    await self._send_notifications(subscribers, message)
                 else:
-                    # Record this message as sent for this site
-                    message_dedup.record_message(notification, site_name)
-
-                    # Get subscribers
-                    subscribers = subscription_manager.get_subscribers(site_name)
-
-                    # Send notifications to all subscribers
-                    if subscribers:
-                        await self._send_notifications(subscribers, notification)
-                    else:
-                        logger.debug(f"站点 {site_name} 没有订阅者")
-
-                # Save new data to cache using cache module
-                save_cache(site_name, latest_data)
-            else:
-                logger.debug(f"站点 {site_name} 无更新")
+                    logger.debug(f"站点 {site_name} 没有订阅者")
 
         except Exception as e:
             logger.error(f"检查站点 {site_name} 更新时出错: {e}")
@@ -371,6 +366,7 @@ class Scheduler:
                             if unified_msg_origin:
                                 message_chain = MessageChain().message(message)
                                 await StarTools.send_message(unified_msg_origin, message_chain)
+                                logger.debug(f"通知内容: {message}")
                                 logger.info(f"已向订阅者 {subscriber_id} 发送通知")
                         else:
                             # For subscribers without stored context,

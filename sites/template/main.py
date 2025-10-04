@@ -1,10 +1,17 @@
 """
 Template for creating new site subscription modules.
-Copy this folder and modify the functions to create a new site module.
+Copy this folder and modify the check_updates function to create a new site module.
 
 Note: If your site module requires additional dependencies, add them to
 requirements.txt in your site module directory. Users must manually install
 these dependencies before using your site module.
+
+The check_updates function handles everything:
+- Fetching data from the source
+- Loading/saving cache data (using the provided cache utilities)
+- Comparing with previous data to find updates
+- Formatting multiple notification messages
+- Returning structured results
 
 Metadata fields in SiteConfig:
 - version: Site module version (default: "1.0.0")
@@ -12,10 +19,65 @@ Metadata fields in SiteConfig:
 - dependencies: List of required dependencies (default: [])
 """
 
-from typing import Any
+from typing import Any, Dict, List
+
 # Standard relative imports for plugin directory structure
-from ...cache import load_cache
+from ...cache import load_cache, save_cache
 from .. import SiteConfig
+
+
+async def check_updates() -> Dict[str, Any]:
+    """
+    Check for updates and return structured result with multiple messages.
+    This function handles everything: fetching, caching, diffing, and formatting.
+
+    Returns:
+        Dict with keys:
+        - success: bool (True if check completed successfully)
+        - error: str (error message if success=False)
+        - messages: List[str] (list of notification messages, can be empty)
+    """
+    try:
+        # Load cached data
+        site_name = "template"
+        cached_data = load_cache(site_name)
+
+        # Fetch latest data from source
+        latest_data = await fetch_data()
+
+        if latest_data is None:
+            return {
+                "success": False,
+                "error": "Failed to fetch data from source",
+                "messages": []
+            }
+
+        # Compare with cached data to find updates
+        messages = []
+        if cached_data is None:
+            # First run - treat all data as new
+            messages = format_multiple_notifications(latest_data)
+        else:
+            # Find differences between cached and latest data
+            new_items = find_new_items(cached_data, latest_data)
+            if new_items:
+                messages = format_multiple_notifications(new_items)
+
+        # Save latest data to cache
+        save_cache(site_name, latest_data)
+
+        return {
+            "success": True,
+            "error": "",
+            "messages": messages
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "messages": []
+        }
 
 
 async def fetch_data():
@@ -36,38 +98,42 @@ async def fetch_data():
     return None
 
 
-def compare_data(cached_data: Any, latest_data: Any) -> bool:
+def find_new_items(cached_data: Any, latest_data: Any) -> List[Any]:
     """
-    Compare cached data with latest data to determine if there are updates
+    Find new items in latest_data that are not in cached_data
     Args:
         cached_data: Previously cached data
         latest_data: Latest data fetched from source
     Returns:
-        True if there are updates, False otherwise
+        List of new items that should be notified
     """
-    # TODO: Implement comparison logic based on your data structure
-    # Example implementation:
-    # return cached_data != latest_data
+    # TODO: Implement logic to find new items based on your data structure
+    # Example for list of items with unique IDs:
+    # cached_ids = {item['id'] for item in cached_data.get('items', [])}
+    # new_items = [item for item in latest_data.get('items', []) if item['id'] not in cached_ids]
+    # return new_items
 
-    # For now, always return False (no updates)
-    return False
+    # For now, return empty list
+    return []
 
 
-def format_notification(latest_data: Any) -> str:
+def format_multiple_notifications(data: Any) -> List[str]:
     """
-    Format the latest data into a notification message
+    Format data into multiple notification messages
     Args:
-        latest_data: Latest data to format
+        data: Data to format (could be single item or list of items)
     Returns:
-        Formatted notification message
+        List of formatted notification messages
     """
     # TODO: Implement formatting logic based on your data structure
     # Example implementation:
-    # if latest_data and "title" in latest_data:
-    #     return f"网站更新: {latest_data['title']}"
+    # if isinstance(data, list):
+    #     return [f"网站更新: {item['title']}" for item in data]
+    # else:
+    #     return [f"网站更新: {data['title']}"]
 
-    # For now, return a placeholder message
-    return "网站有新更新，请查看!"
+    # For now, return a single placeholder message
+    return ["网站有新更新，请查看!"]
 
 
 def site_description() -> str:
@@ -104,14 +170,10 @@ def site_display_name() -> str:
     return "网站名称"
 
 
-
-
-# Register the site using the functional configuration with metadata
+# Register the site using the check_updates interface
 site = SiteConfig(
     name="template",
-    fetch_func=fetch_data,
-    compare_func=compare_data,
-    format_func=format_notification,
+    check_updates_func=check_updates,
     description_func=site_description,
     schedule_func=site_schedule,
     display_name_func=site_display_name,

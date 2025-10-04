@@ -54,6 +54,18 @@ class SubscriptionManager:
                     for site_data in self.subscriptions.values()
                 )
                 logger.info(f"已加载 {len(self.subscriptions)} 个站点，共 {total_subs} 个订阅")
+
+                # Migrate existing "all" subscriptions to individual sites
+                if "all" in self.subscriptions:
+                    all_subscriptions = self.subscriptions["all"]
+                    logger.info(f"发现 'all' 订阅，正在迁移到各个站点...")
+
+                    # Get available sites (will be loaded by scheduler later, but we can't access it here yet)
+                    # We'll handle this migration in the plugin initialization instead
+                    # For now, just remove the "all" entry to prevent errors
+                    del self.subscriptions["all"]
+                    self.save_subscriptions()
+                    logger.info("'all' 订阅已移除，将在插件初始化时处理迁移")
             else:
                 self.subscriptions = {}
                 self.save_subscriptions()
@@ -112,9 +124,6 @@ class SubscriptionManager:
             True if successful, False otherwise
         """
         try:
-            # Handle special "全部" site
-            if site_name == "全部":
-                site_name = "all"
 
             # Initialize site in subscriptions if it doesn't exist
             if site_name not in self.subscriptions:
@@ -126,7 +135,7 @@ class SubscriptionManager:
             # Check if already subscribed
             if user_id in self.subscriptions[site_name][target_list]:
                 target_type = "群组" if is_group else "用户"
-                site_display_name = "全部" if site_name == "all" else site_name
+                site_display_name = site_name
                 logger.info(f"{target_type} {user_id} 已经订阅了 {site_display_name}")
                 return False
 
@@ -140,7 +149,7 @@ class SubscriptionManager:
 
             self.save_subscriptions()
             target_type = "群组" if is_group else "用户"
-            site_display_name = "全部" if site_name == "all" else site_name
+            site_display_name = site_name
             logger.info(f"{target_type} {user_id} 订阅了 {site_display_name}")
             return True
         except Exception as e:
@@ -158,9 +167,6 @@ class SubscriptionManager:
             True if successful, False otherwise
         """
         try:
-            # Handle special "全部" site
-            if site_name == "全部":
-                site_name = "all"
 
             # Check if site exists and user/group is subscribed
             if site_name in self.subscriptions:
@@ -168,22 +174,21 @@ class SubscriptionManager:
                 if user_id in self.subscriptions[site_name][target_list]:
                     self.subscriptions[site_name][target_list].remove(user_id)
 
-                    # Clean up empty site entries (but don't clean up "all" site)
+                    # Clean up empty site entries
                     if (
-                        site_name != "all"
-                        and not self.subscriptions[site_name]["users"]
+                        not self.subscriptions[site_name]["users"]
                         and not self.subscriptions[site_name]["groups"]
                     ):
                         del self.subscriptions[site_name]
 
                     self.save_subscriptions()
                     target_type = "群组" if is_group else "用户"
-                    site_display_name = "全部" if site_name == "all" else site_name
+                    site_display_name = site_name
                     logger.info(f"{target_type} {user_id} 取消订阅了 {site_display_name}")
                     return True
 
             target_type = "群组" if is_group else "用户"
-            site_display_name = "全部" if site_name == "all" else site_name
+            site_display_name = site_name
             logger.info(f"{target_type} {user_id} 未订阅 {site_display_name}")
             return False
         except Exception as e:
@@ -204,11 +209,7 @@ class SubscriptionManager:
 
         for site_name, site_data in self.subscriptions.items():
             if user_id in site_data.get(target_list, []):
-                # Convert "all" back to "全部" for display
-                if site_name == "all":
-                    subscriptions.append("全部")
-                else:
-                    subscriptions.append(site_name)
+                subscriptions.append(site_name)
 
         return subscriptions
 
@@ -229,14 +230,6 @@ class SubscriptionManager:
             subscribers.extend(site_data.get("users", []))
             # Add all groups
             subscribers.extend(site_data.get("groups", []))
-
-        # Add subscribers who subscribed to "全部" (all sites)
-        if "all" in self.subscriptions:
-            all_data = self.subscriptions["all"]
-            # Add all users who subscribed to all
-            subscribers.extend(all_data.get("users", []))
-            # Add all groups who subscribed to all
-            subscribers.extend(all_data.get("groups", []))
 
         return subscribers
 

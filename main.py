@@ -6,7 +6,6 @@ from astrbot.core.star.star_tools import StarTools
 
 from .manager import subscription_manager
 from .scheduler import scheduler_instance
-from .message_dedup import message_dedup
 
 @register("spider", "zanderzhng", "网站订阅插件，可以订阅不同网站的更新并推送给用户", "1.0.0", "https://github.com/zanderzhng/astrbot-plugin-spider")
 class SpiderPlugin(Star):
@@ -175,9 +174,7 @@ class SpiderPlugin(Star):
             if user_subscriptions:
                 message += "已订阅:\n"
                 for site in user_subscriptions:
-                    if site == "全部":
-                        message += f"✓ {site} - 接收所有站点的通知\n"
-                    elif site in scheduler_instance.site_configs:
+                    if site in scheduler_instance.site_configs:
                         display_name = scheduler_instance.site_configs[site].display_name()
                         description = scheduler_instance.site_configs[site].description()
                         message += f"✓ {display_name} - {description}\n"
@@ -186,17 +183,12 @@ class SpiderPlugin(Star):
                 message += "\n"
 
             # 显示未订阅的站点
-            unsubscribed_sites = [site for site in available_sites if site not in user_subscriptions and site != "all"]
-            # Add "全部" to unsubscribed list if not subscribed
-            if "全部" not in user_subscriptions:
-                unsubscribed_sites.append("全部")
+            unsubscribed_sites = [site for site in available_sites if site not in user_subscriptions]
 
             if unsubscribed_sites:
                 message += "未订阅:\n"
                 for site in unsubscribed_sites:
-                    if site == "全部":
-                        message += f"○ {site} - 接收所有站点的通知\n"
-                    elif site in scheduler_instance.site_configs:
+                    if site in scheduler_instance.site_configs:
                         display_name = scheduler_instance.site_configs[site].display_name()
                         description = scheduler_instance.site_configs[site].description()
                         message += f"○ {display_name} - {description}\n"
@@ -211,6 +203,7 @@ class SpiderPlugin(Star):
         """处理订阅全部命令
 
         订阅所有可用网站的更新通知。用户或群组将接收所有网站的内容更新推送。
+        Excludes example and template sites.
 
         Args:
             event: AstrBot 消息事件对象
@@ -230,22 +223,32 @@ class SpiderPlugin(Star):
             target_id = event.get_sender_id()
             target_type = "用户"
 
-        # 订阅全部站点
-        session_context = event.unified_msg_origin
-        success = subscription_manager.subscribe(target_id, "全部", is_group, session_context)
+        # 获取所有可用的站点（排除 example 和 template）
+        available_sites = [
+            site_name for site_name in scheduler_instance.site_configs.keys()
+            if site_name not in ["example", "template"]
+        ]
 
-        if success:
-            yield event.plain_result(f"{target_type} {target_id} 已订阅全部站点")
+        if not available_sites:
+            yield event.plain_result("暂无可用的订阅源")
             event.stop_event()
-        else:
-            yield event.plain_result(f"{target_type} {target_id} 订阅全部站点失败")
-            event.stop_event()
+            return
+
+        # 订阅所有站点
+        session_context = event.unified_msg_origin
+        subscribed_count = 0
+        for site_name in available_sites:
+            if subscription_manager.subscribe(target_id, site_name, is_group, session_context):
+                subscribed_count += 1
+
+        yield event.plain_result(f"{target_type} {target_id} 已订阅 {subscribed_count} 个站点")
+        event.stop_event()
 
     @filter.command("取消订阅全部")
     async def handle_unsubscribe_all(self, event: AstrMessageEvent):
         """处理取消订阅全部命令
 
-        取消订阅所有网站的更新通知。用户或群组将不再接收任何网站的内容更新推送。
+        取消订阅所有已订阅网站的更新通知。用户或群组将不再接收任何网站的内容更新推送。
 
         Args:
             event: AstrBot 消息事件对象
@@ -265,12 +268,19 @@ class SpiderPlugin(Star):
             target_id = event.get_sender_id()
             target_type = "用户"
 
-        # 取消订阅全部站点
-        success = subscription_manager.unsubscribe(target_id, "全部", is_group)
+        # 获取用户当前订阅的站点
+        current_subscriptions = subscription_manager.get_subscriptions(target_id, is_group)
 
-        if success:
-            yield event.plain_result(f"{target_type} {target_id} 已取消订阅全部站点")
+        if not current_subscriptions:
+            yield event.plain_result("您当前没有订阅任何站点")
             event.stop_event()
-        else:
-            yield event.plain_result(f"{target_type} {target_id} 未订阅全部站点或取消订阅失败")
-            event.stop_event()
+            return
+
+        # 取消订阅所有已订阅的站点
+        unsubscribed_count = 0
+        for site_name in current_subscriptions:
+            if subscription_manager.unsubscribe(target_id, site_name, is_group):
+                unsubscribed_count += 1
+
+        yield event.plain_result(f"{target_type} {target_id} 已取消订阅 {unsubscribed_count} 个站点")
+        event.stop_event()

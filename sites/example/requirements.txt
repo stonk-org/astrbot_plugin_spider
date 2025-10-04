@@ -1,0 +1,2 @@
+# Example site has no additional dependencies
+# All required packages are provided by AstrBot core
