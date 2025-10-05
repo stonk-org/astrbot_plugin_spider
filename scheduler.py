@@ -313,16 +313,21 @@ class Scheduler:
             success = result.get('success', False)
             error = result.get('error', '')
             messages = result.get('messages', [])
+            has_chain_messages = result.get('has_chain_messages', False)
 
             if not success:
                 logger.error(f"站点 {site_name} 检查更新失败: {error}")
                 return
 
+            # Send chain messages first if available
+            if has_chain_messages:
+                await self._send_chain_notifications(subscribers, site_name)
+
             if not messages:
                 logger.debug(f"站点 {site_name} 无新内容，跳过发送通知")
                 return
 
-            # Process each message
+            # Process each text message
             for message in messages:
                 if not message:
                     continue
@@ -382,6 +387,81 @@ class Scheduler:
                         continue
         except Exception as e:
             logger.error(f"发送通知时出错: {e}")
+
+    async def _send_chain_notifications(self, subscribers: list[str], site_name: str):
+        """
+        Send chain notifications (with images) to subscribers
+        Args:
+            subscribers: List of subscriber IDs (user IDs or group IDs)
+            site_name: Name of the site for getting the chain messages
+        """
+        try:
+            if not self.context:
+                logger.error("Context not available for sending chain notifications")
+                return
+
+            if site_name not in self.site_configs:
+                logger.error(f"站点 {site_name} 未注册")
+                return
+
+            # Get batch size from configuration
+            batch_size = self.get_config_value('notification_batch_size', 50)
+
+            # Process subscribers in batches to avoid overload
+            for i in range(0, len(subscribers), batch_size):
+                batch = subscribers[i:i + batch_size]
+
+                for subscriber_id in batch:
+                    try:
+                        # Check if we have stored session context for this subscriber
+                        if subscriber_id in subscription_manager.subscriber_sessions:
+                            # Send to stored session context
+                            unified_msg_origin = subscription_manager.subscriber_sessions[subscriber_id]
+                            # Validate session context before sending
+                            if unified_msg_origin:
+                                # Try to call the site's chain message sending function
+                                site_config = self.site_configs[site_name]
+                                if hasattr(site_config, 'check_updates'):
+                                    # Re-run check_updates with unified_msg_origin to trigger chain message storage
+                                    result = await site_config.check_updates(unified_msg_origin)
+                                    if result and result.get('has_chain_messages', False):
+                                        # Import and call the send_stored_tweets_as_chains function if it exists
+                                        try:
+                                            # Import the module to get the send_stored_tweets_as_chains function
+                                            import importlib
+                                            if site_name == "x_elonmusk":
+                                                from .sites.x_elonmusk.main import send_stored_tweets_as_chains
+                                                success = await send_stored_tweets_as_chains(unified_msg_origin)
+                                                if success:
+                                                    logger.info(f"已向订阅者 {subscriber_id} 发送图片消息")
+                                                else:
+                                                    logger.warning(f"向订阅者 {subscriber_id} 发送图片消息失败")
+                                            else:
+                                                # For other sites, try to dynamically call a send_chain_messages function if it exists
+                                                module_name = f".sites.{site_name}.main"
+                                                try:
+                                                    module = importlib.import_module(module_name, package=__package__)
+                                                    if hasattr(module, 'send_stored_tweets_as_chains'):
+                                                        send_chain_func = getattr(module, 'send_stored_tweets_as_chains')
+                                                        success = await send_chain_func(unified_msg_origin)
+                                                        if success:
+                                                            logger.info(f"已向订阅者 {subscriber_id} 发送链式消息")
+                                                        else:
+                                                            logger.warning(f"向订阅者 {subscriber_id} 发送链式消息失败")
+                                                except ImportError:
+                                                    logger.debug(f"站点 {site_name} 不支持链式消息")
+                                        except Exception as e:
+                                            logger.error(f"调用站点 {site_name} 的链式消息发送函数失败: {e}")
+                                logger.debug(f"已处理订阅者 {subscriber_id} 的链式消息")
+                        else:
+                            logger.debug(f"订阅者 {subscriber_id} 没有会话上下文，无法发送链式消息")
+
+                    except Exception as e:
+                        logger.error(f"向订阅者 {subscriber_id} 发送链式通知失败: {e}")
+                        # Continue with other subscribers even if one fails
+                        continue
+        except Exception as e:
+            logger.error(f"发送链式通知时出错: {e}")
 
     def get_site_name_by_display_name(self, display_name: str) -> str:
         """Get internal site name by display name"""
